@@ -1,0 +1,1 @@
+Deployment workflow can be added after the owner creates a Cloudflare account and supplies account ID and scoped API token through GitHub Actions Secrets. Never commit credentials.
