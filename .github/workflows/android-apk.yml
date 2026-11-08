@@ -34,6 +34,7 @@ jobs:
           node-version: '22'
       - name: Unit tests and JavaScript syntax
         run: |
+          set -o pipefail
           mkdir -p evidence dist
           node --check word-pet-mobile/android-native/app/src/main/assets/app.js
           node --check word-pet-mobile/cloudflare-worker/src/index.js
@@ -69,6 +70,7 @@ jobs:
           gradle assembleDebug assembleDebugAndroidTest --no-daemon --stacktrace
       - name: Verify APK signature, package and contents
         run: |
+          set -o pipefail
           cp word-pet-mobile/android-native/app/build/outputs/apk/debug/app-debug.apk dist/WordPet-Family-1.4.0.apk
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs dist/WordPet-Family-1.4.0.apk | tee evidence/apk-signature.txt
           "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging dist/WordPet-Family-1.4.0.apk > evidence/apk-metadata.txt
@@ -96,15 +98,8 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-boot-timeout: 600
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: |
-            cd word-pet-mobile/android-native
-            gradle connectedDebugAndroidTest --no-daemon --stacktrace
-            adb shell pm clear com.wordpet.family
-            adb shell am start -n com.wordpet.family/com.wordpet.app.MainActivity
-            sleep 5
-            adb exec-out screencap -p > ../../evidence/android-emulator-home.png
-            adb shell pidof com.wordpet.family > ../../evidence/android-process.txt
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: bash scripts/run_emulator.sh
       - name: Assemble honest verification report
         run: |
           python scripts/build_report.py

@@ -11,8 +11,8 @@ import static org.junit.Assert.*;
 public class AppSmokeTest {
  @Rule public ActivityScenarioRule<MainActivity> rule=new ActivityScenarioRule<>(MainActivity.class);
  private String js(String script)throws Exception{CountDownLatch done=new CountDownLatch(1);AtomicReference<String> result=new AtomicReference<>("");rule.getScenario().onActivity(a->a.view().evaluateJavascript(script,v->{result.set(v);done.countDown();}));assertTrue("JS callback timeout",done.await(8,TimeUnit.SECONDS));return result.get();}
- private void ready()throws Exception{for(int i=0;i<60;i++){if("true".equals(js("typeof WordPet!=='undefined' && typeof WPApp!=='undefined'")))return;Thread.sleep(250);}fail("Bundled application did not start");}
- @Before public void reset()throws Exception{ready();js("localStorage.clear();WordPetNative.saveState(JSON.stringify(WordPet.fresh()));location.reload();true");Thread.sleep(500);ready();}
+ private void ready()throws Exception{for(int i=0;i<80;i++){if("true".equals(js("typeof WordPet!=='undefined' && typeof WPApp!=='undefined'")))return;Thread.sleep(250);}fail("Bundled application did not start");}
+ @Before public void reset()throws Exception{ready();js("localStorage.clear();s=WordPet.fresh();current=E.dateKey();E.day(s,current);persist();location.reload();true");Thread.sleep(500);ready();}
  @Test public void bundledAppStartsWithoutServer()throws Exception{assertEquals("true",js("document.title.includes('Word Pet') && !cloud.url"));assertEquals("30",js("WORDPET_LESSONS.length"));}
  @Test public void secureOriginAndWebCryptoAvailable()throws Exception{assertEquals("true",js("isSecureContext && !!crypto.subtle"));}
  @Test public void parentPinHashRunsOnNativeWebView()throws Exception{js("window.pinTest='';pinHash('123456','sample-salt').then(v=>window.pinTest=v);true");for(int i=0;i<60;i++){if("64".equals(js("window.pinTest.length")))return;Thread.sleep(100);}fail("PIN hashing failed");}
