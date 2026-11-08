@@ -1,0 +1,56 @@
+name: Stage Word Pet 1.8 offline audio inputs
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/wordpet18-input.yml']
+permissions:
+  contents: read
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Capture approved source only
+        env:
+          SOURCE_URL: 'https://sdmntprwestus3.oaiusercontent.com/files/00000000-4b50-81fd-b295-0b83ca3c8474/raw?se=2026-11-08T11%3A17%3A29Z&sp=r&sv=2026-02-06&sr=b&scid=c56c5903-920d-5905-ba23-7f575bc589f4&skoid=5e713cdb-766b-475e-a3ca-8adb6cf99aa0&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-07T23%3A05%3A18Z&ske=2026-11-08T23%3A05%3A18Z&sks=b&skv=2026-02-06&sig=HE53v1%2Bxus3vh8w%2BdRVjFP0Fp9jbWXDiyhz9Lx0cvIE%3D'
+        run: |
+          mkdir -p input
+          curl --fail --location --retry 2 "$SOURCE_URL" -o input/app-source.zip
+          echo '5f716810f36a52518b3e0913eb39a1341394c992f214f9bdba7c73a040aa0e63  input/app-source.zip' | sha256sum -c
+      - name: Fetch pinned official runtime and Mandarin model
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import urllib.request,json,pathlib,os,hashlib,tarfile,zipfile
+          out=pathlib.Path('input');report={}
+          def get(url,path):
+              urllib.request.urlretrieve(url,path)
+              report[str(path.name)]={'url':url,'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+          req=urllib.request.Request('https://api.github.com/repos/k2-fsa/sherpa-onnx/releases/tags/v1.12.22',headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'User-Agent':'WordPet-build'})
+          assets=json.load(urllib.request.urlopen(req))['assets']
+          names=[(a['name'],a['browser_download_url'],a['size']) for a in assets if 'android' in a['name'] or a['name'].endswith('.aar')]
+          print('Android runtime options',names)
+          candidates=[a for a in assets if a['name'].endswith('.aar') and 'rknn' not in a['name']]
+          if candidates:
+              a=candidates[0];get(a['browser_download_url'],out/'sherpa.aar')
+          else:
+              a=next(a for a in assets if 'android' in a['name'] and a['name'].endswith('.tar.bz2') and 'rknn' not in a['name'])
+              get(a['browser_download_url'],out/'sherpa-android.tar.bz2')
+          url='https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-zh_CN-huayan-medium.tar.bz2'
+          get(url,out/'mandarin.tar.bz2')
+          with tarfile.open(out/'mandarin.tar.bz2') as t:
+              print('Mandarin model entries',[(m.name,m.size) for m in t.getmembers() if m.isfile()][:35])
+          for name,url in [('OfflineTts.kt','https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.12.22/sherpa-onnx/kotlin-api/OfflineTts.kt'),('SHERPA-LICENSE','https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.12.22/LICENSE'),('HUAYAN-MODEL-CARD','https://huggingface.co/rhasspy/piper-voices/raw/main/zh/zh_CN/huayan/medium/MODEL_CARD')]:
+              try:get(url,out/name)
+              except Exception as e:print(name,str(e))
+          (out/'provenance.json').write_text(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wordpet18-build-inputs
+          path: input/
+          retention-days: 14
+          if-no-files-found: error
