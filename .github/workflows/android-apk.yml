@@ -5,6 +5,8 @@ on:
   push:
     paths:
       - "word-pet-mobile/android-native/**"
+      - "word-pet-mobile/server/**"
+      - "word-pet-mobile/cloudflare-worker/**"
       - ".github/workflows/android-apk.yml"
 
 permissions:
