@@ -1,0 +1,37 @@
+name: Deploy Word Pet Family Server
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Wrangler
+        run: npm install --global wrangler
+      - name: Configure D1 database ID
+        working-directory: word-pet-mobile/cloudflare-worker
+        env:
+          D1_DATABASE_ID: ${{ vars.WORDPET_D1_DATABASE_ID }}
+        run: |
+          test -n "$D1_DATABASE_ID"
+          sed -i "s/REPLACE_WITH_D1_DATABASE_ID/$D1_DATABASE_ID/" wrangler.toml
+      - name: Apply database schema
+        working-directory: word-pet-mobile/cloudflare-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler d1 execute word-pet-family --remote --file=schema.sql
+      - name: Deploy Worker
+        working-directory: word-pet-mobile/cloudflare-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler deploy
