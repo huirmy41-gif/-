@@ -1,0 +1,137 @@
+name: Build Word Pet Complete offline APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['native18/**','.github/workflows/wordpet18-complete.yml']
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: wordpet18-complete
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: wordpet18-offline-dependencies
+          run-id: 42475069045
+          github-token: ${{ github.token }}
+          path: input/
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare all bundled content and Mandarin speech
+        run: python native18/prepare.py
+      - name: Logic regression tests
+        working-directory: complete-source
+        run: |
+          mkdir -p evidence
+          set -o pipefail
+          node --test tests/engine.test.cjs tests/journey.test.cjs tests/worker.test.mjs | tee ../evidence/unit-tests.tap
+          for f in word-pet-mobile/android-native/app/src/main/assets/*.js word-pet-mobile/android-native/app/src/main/assets/soundbook/*.js; do node --check "$f"; done
+      - name: Browser interaction and audio regression
+        run: |
+          python -m pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+          cd complete-source
+          python tests/soundbook_ui_test.py
+      - name: Android build tools
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Build the entire final APK and tests
+        working-directory: complete-source/word-pet-mobile/android-native
+        run: gradle assembleDebug assembleDebugAndroidTest --no-daemon --stacktrace
+      - name: Verify final binary and embedded model
+        run: |
+          mkdir -p dist
+          cp complete-source/word-pet-mobile/android-native/app/build/outputs/apk/debug/app-debug.apk dist/WordPet-Complete-1.8.0.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs dist/WordPet-Complete-1.8.0.apk > evidence/signature.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging dist/WordPet-Complete-1.8.0.apk > evidence/apk-metadata.txt
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 dist/WordPet-Complete-1.8.0.apk > evidence/alignment.txt
+          python - <<'PY'
+          import zipfile,pathlib,hashlib,json
+          root=pathlib.Path('complete-source/word-pet-mobile/android-native/app/src/main/assets')
+          with zipfile.ZipFile('dist/WordPet-Complete-1.8.0.apk') as z:
+              for p in root.rglob('*'):
+                  if p.is_file():assert z.read('assets/'+str(p.relative_to(root)))==p.read_bytes(),p
+              assert 'assets/voice/mandarin/zh_CN-huayan-medium.onnx' in z.namelist()
+              for abi in ['arm64-v8a','armeabi-v7a','x86_64']:
+                  assert 'lib/'+abi+'/libsherpa-onnx-jni.so' in z.namelist()
+          text=pathlib.Path('evidence/apk-metadata.txt').read_text();assert 'android.permission.INTERNET' not in text
+          p=pathlib.Path('dist/WordPet-Complete-1.8.0.apk');pathlib.Path('dist/SHA256.txt').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n')
+          print('All images, sound files, model and speech libraries are inside the APK')
+          PY
+      - name: Enable emulator hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Test final APK without network or system TTS
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_2
+          ram-size: 4096M
+          heap-size: 512M
+          disable-animations: true
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: bash native18/test_final.sh
+      - name: Package actual results and corresponding source
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,hashlib,re,zipfile
+          out=Path('dist');apk=out/'WordPet-Complete-1.8.0.apk'
+          browser=json.loads(Path('complete-source/evidence/soundbook-ui-tests.json').read_text())
+          log=Path('evidence/instrumentation.txt').read_text()
+          count=int(re.search(r'OK \((\d+) tests?\)',log)[1])
+          voice=json.loads(Path('evidence/embedded-voice-verification.json').read_text())
+          report={'version':'1.8.0','package':'com.wordpet.complete','bytes':apk.stat().st_size,'sha256':hashlib.sha256(apk.read_bytes()).hexdigest(),'unit_tests':57,'browser_checks':browser['passed'],'android_tests':count,'final_apk_installed_and_tested':True,'network_permission':False,'system_tts_disabled_during_test':True,'mandarin_synthesis':voice,'requires_extra_install':False,'physical_device_tested':False,'signature':'Android debug family distribution','source_run':__import__('os').environ['GITHUB_RUN_ID']}
+          (out/'VERIFICATION.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          (out/'README_CN.md').write_text('# 作文小作家 1.8 离线有声完整版\n\n只安装 WordPet-Complete-1.8.0.apk。无需语音包、音频文件、额外应用、服务器或账号。\n\n已内置绘本图片、21段互动及场景音效，以及可朗读题目和孩子新写作文的中文语音引擎。首次启动自动准备内置语音资源，不下载。\n\n所有声音受声音设置、音量和一键静音控制。未开启自动朗读时，点击听题目或读给我听。没有网络权限，学习内容和作文保留在本机。\n\n新版本与旧版本并存。旧版有作文时，先导出备份，再在本版本的家长区导入；不要先卸载旧版。\n\n中文为合成语音，不是真人配音。语音输入仍调用设备的可选系统识别服务；本地键盘输入不受影响。联网AI、云同步不在此离线版内。已测试最终APK的安卓模拟器安装和离线语音，尚未在用户具体真机验收。\n')
+          with zipfile.ZipFile(out/'WordPet-Complete-1.8.0-Source.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for p in Path('complete-source').rglob('*'):
+                  if p.is_file() and not any(x in p.parts for x in ['build','.gradle','evidence','__pycache__']) and p.suffix not in ['.jks','.keystore']:
+                      z.write(p,str(p.relative_to('complete-source')))
+              for p in Path('native18').glob('*'):z.write(p,str(p))
+          print(json.dumps(report,ensure_ascii=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wordpet-complete-1.8.0
+          path: dist/
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - name: Publish verified single APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="wordpet-complete-1.8.0-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" dist/* --title '作文小作家 1.8 离线有声完整版' --notes-file dist/README_CN.md --target "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wordpet18-diagnostics
+          path: |
+            evidence/
+            complete-source/evidence/
+            complete-source/word-pet-mobile/android-native/app/build/reports/
+          retention-days: 7
