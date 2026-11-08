@@ -36,7 +36,11 @@ jobs:
           node --test tests/engine.test.cjs tests/worker.test.mjs tests/journey.test.cjs > evidence/base-unit-tests.tap
       - name: Install official Android build tools
         run: |
-          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$SDKMANAGER" --licenses > /dev/null
+          set -o pipefail
+          "$SDKMANAGER" 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
@@ -54,7 +58,6 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import zipfile,json,hashlib
-          root=Path('.')
           with zipfile.ZipFile('dist/prepared-source.zip','w',zipfile.ZIP_DEFLATED) as z:
               for base in ['word-pet-mobile','redesign','tests','scripts','docs','.github']:
                   for p in Path(base).rglob('*'):
