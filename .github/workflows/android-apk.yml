@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "word-pet-mobile/**"
+      - "word-pet-mobile/android-native/**"
       - ".github/workflows/android-apk.yml"
 
 permissions:
@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,51 +24,38 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Node 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools, platforms;android-35, build-tools;35.0.0'
 
-      - name: Install Capacitor dependencies
-        working-directory: word-pet-mobile/mobile-app
-        run: npm ci
-
-      - name: Add Android platform if not committed
-        working-directory: word-pet-mobile/mobile-app
+      - name: Install Android platform and build tools
         run: |
-          if [ ! -d android ]; then
-            npx cap add android
-          fi
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Sync Android project
-        working-directory: word-pet-mobile/mobile-app
-        run: npx cap sync android
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Generate Gradle wrapper
+        working-directory: word-pet-mobile/android-native
+        run: gradle wrapper --gradle-version 8.7
 
       - name: Build debug APK
-        working-directory: word-pet-mobile
-        run: |
-          cd mobile-app/android
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+        working-directory: word-pet-mobile/android-native
+        run: ./gradlew assembleDebug --no-daemon
 
-      - name: Verify APK
+      - name: Verify APK and checksum
         run: |
-          APK="word-pet-mobile/mobile-app/android/app/build/outputs/apk/debug/app-debug.apk"
+          APK="word-pet-mobile/android-native/app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
           file "$APK"
           sha256sum "$APK" | tee apk-sha256.txt
 
-      - name: Upload APK
+      - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: word-pet-debug-apk
+          name: word-pet-android-debug-apk
           path: |
-            word-pet-mobile/mobile-app/android/app/build/outputs/apk/debug/app-debug.apk
+            word-pet-mobile/android-native/app/build/outputs/apk/debug/app-debug.apk
             apk-sha256.txt
           if-no-files-found: error
           retention-days: 30
