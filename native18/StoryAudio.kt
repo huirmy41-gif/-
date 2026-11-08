@@ -15,18 +15,32 @@ import kotlin.math.sqrt
 
 /** All models and sound files are shipped in this APK. No TTS service or network. */
 class StoryAudio(private val activity: Activity, private val web: WebView) {
- private val worker = Executors.newSingleThreadExecutor()
+ // ONNX and the phonemizer own process-wide state. Activity recreation must not
+ // construct or destroy a second engine concurrently. This contains no Activity.
+ companion object {
+  private val processWorker=Executors.newSingleThreadExecutor()
+  @Volatile private var processEngine:OfflineTts?=null
+  @Volatile private var processReady=false
+  @Volatile private var processError=""
+ }
+ private val worker=processWorker
  private val sequence = AtomicInteger(0)
  @Volatile private var closed = false
- @Volatile private var ready = false
- @Volatile private var initError = ""
+ private var ready:Boolean
+  get()=processReady
+  set(value){processReady=value}
+ private var initError:String
+  get()=processError
+  set(value){processError=value}
+ private var engine:OfflineTts?
+  get()=processEngine
+  set(value){processEngine=value}
  @Volatile private var lastEvent = "idle"
  @Volatile private var generatedSamples = 0
- @Volatile private var engine: OfflineTts? = null
  @Volatile private var track: AudioTrack? = null
  private var player: MediaPlayer? = null
  private val modelRoot = "voice/mandarin"
- init { worker.execute { initialize() } }
+ init { worker.execute { if(!processReady) initialize() } }
  private fun emit(type: String, id: String = "", token: Int? = null) {
   if (closed || (token != null && token != sequence.get())) return
   lastEvent = type
@@ -45,6 +59,7 @@ class StoryAudio(private val activity: Activity, private val web: WebView) {
   }
  }
  private fun initialize() {
+  if(processReady||closed)return
   try {
    val data=File(activity.filesDir,"embedded-voice-180/espeak-ng-data")
    val marker=File(data.parentFile,"complete")
@@ -53,9 +68,9 @@ class StoryAudio(private val activity: Activity, private val web: WebView) {
    val config=OfflineTtsConfig(model=OfflineTtsModelConfig(
     vits=OfflineTtsVitsModelConfig(model="$modelRoot/zh_CN-huayan-medium.onnx",tokens="$modelRoot/tokens.txt",dataDir=data.absolutePath),
     numThreads=2,debug=false,provider="cpu"),maxNumSentences=1)
-   engine=OfflineTts(assetManager=activity.assets,config=config)
+   engine=OfflineTts(assetManager=activity.applicationContext.assets,config=config)
    check(engine!!.sampleRate()>0)
-   ready=true
+   ready=true;initError=""
   } catch(e: Throwable) { initError=e.javaClass.simpleName; ready=false }
  }
  @JavascriptInterface fun status(): String = JSONObject().put("nativePlayback",true).put("offlineChinese",ready).put("embedded",true).put("requiresInstall",false).put("initializing",!ready&&initError.isEmpty()).put("error",initError).put("lastEvent",lastEvent).put("generatedSamples",generatedSamples).toString()
@@ -74,7 +89,7 @@ class StoryAudio(private val activity: Activity, private val web: WebView) {
    try {
     val p=MediaPlayer();player=p
     p.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
-    activity.assets.openFd("soundbook/audio/$id.wav").use { p.setDataSource(it.fileDescriptor,it.startOffset,it.length) }
+    activity.assets.openFd("soundbook/audio/$id.wav").use { p.setDataSource(it.fileDescriptor(),it.startOffset,it.length) }
     val v=volume.coerceIn(0.0,.55).toFloat();p.setVolume(v,v);p.isLooping=false
     p.setOnPreparedListener { if(!closed&&token==sequence.get()) {it.start();emit("playing",id,token)} }
     p.setOnCompletionListener { if(player===it){player=null;it.release()};emit("ended",id,token) }
@@ -128,7 +143,6 @@ class StoryAudio(private val activity: Activity, private val web: WebView) {
    }
   } catch(_:Exception) {emit("speech-error")}
  }
- /** Internal instrumentation-only synthesis check; not exposed to JavaScript. */
  fun synthesizeForTest(text:String):String {
   check(BuildConfig.DEBUG)
   return worker.submit<String> {
@@ -141,5 +155,7 @@ class StoryAudio(private val activity: Activity, private val web: WebView) {
   }.get(120,TimeUnit.SECONDS)
  }
  fun pause() {stop();web.evaluateJavascript("window.WPSound&&window.WPSound.stop()",null)}
- fun close() {if(closed)return;stop();closed=true;worker.execute {engine?.release();engine=null};worker.shutdown();web.removeJavascriptInterface("WordPetAudioNative")}
+ // The shared engine intentionally lives until process exit. No Activity or
+ // WebView is retained by it, and a recreated activity reuses the same session.
+ fun close() {if(closed)return;stop();closed=true;web.removeJavascriptInterface("WordPetAudioNative")}
 }
