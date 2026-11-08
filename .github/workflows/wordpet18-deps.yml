@@ -1,0 +1,45 @@
+name: Prepare embedded Chinese speech
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/wordpet18-deps.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wordpet18-build-inputs
+          run-id: 42474846701
+          github-token: ${{ github.token }}
+          path: input/
+      - name: Download official embedded runtime and Chinese voice
+        run: |
+          python - <<'PY'
+          import urllib.request,json,pathlib,hashlib,tarfile
+          out=pathlib.Path('input');report={}
+          def get(url,path):
+              urllib.request.urlretrieve(url,path)
+              report[path.name]={'url':url,'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+          get('https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-v1.13.2-android.tar.bz2',out/'sherpa-android.tar.bz2')
+          get('https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-zh_CN-huayan-medium.tar.bz2',out/'mandarin.tar.bz2')
+          for archive in ['sherpa-android.tar.bz2','mandarin.tar.bz2']:
+              with tarfile.open(out/archive) as t:print(archive,[(m.name,m.size) for m in t.getmembers() if m.isfile()][:35])
+          get('https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.2/sherpa-onnx/kotlin-api/OfflineTts.kt',out/'OfflineTts.kt')
+          get('https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.2/LICENSE',out/'SHERPA-LICENSE')
+          get('https://huggingface.co/rhasspy/piper-voices/raw/main/zh/zh_CN/huayan/medium/MODEL_CARD',out/'HUAYAN-MODEL-CARD')
+          print('MODEL_CARD', (out/'HUAYAN-MODEL-CARD').read_text())
+          (out/'provenance.json').write_text(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wordpet18-offline-dependencies
+          path: input/
+          retention-days: 14
+          if-no-files-found: error
