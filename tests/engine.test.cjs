@@ -1,0 +1,28 @@
+const test=require('node:test'),assert=require('node:assert/strict');
+const E=require('../word-pet-mobile/android-native/app/src/main/assets/engine.js');const day='2026-11-08';
+function ready(s,key=day){Object.assign(E.day(s,key).draft,{word:'毛茸茸',wordSentence:'毛茸茸的小狗跑来了。',detail1:'小狗是白色的',detail2:'它摇着尾巴',sentence:'小狗在草地上飞快地跑。',title:'我的小狗',essay:'我喜欢毛茸茸的小狗。它会摇尾巴。我很开心。'});return s}
+test('fresh state and empty balance',()=>{const s=E.fresh();assert.equal(s.schema,2);assert.equal(E.balance(s),0)});
+test('local calendar date',()=>assert.equal(E.dateKey(new Date(2026,10,8,0,1)),'2026-11-08'));
+test('empty tasks earn nothing',()=>{const s=E.fresh();for(let i=0;i<4;i++)assert.throws(()=>E.complete(s,day,i));assert.equal(E.balance(s),0)});
+test('four tasks award six stars',()=>{const s=ready(E.fresh());assert.deepEqual([0,1,2,3].map(i=>E.complete(s,day,i)),[1,1,1,3]);assert.equal(E.balance(s),6)});
+test('repeat completion is idempotent',()=>{const s=ready(E.fresh());for(let j=0;j<20;j++)for(let i=0;i<4;i++)E.complete(s,day,i);assert.equal(E.balance(s),6);assert.equal(s.essays.length,1)});
+test('new day resets tasks but not stars',()=>{const s=ready(E.fresh());[0,1,2,3].forEach(i=>E.complete(s,day,i));assert.equal(E.day(s,'2026-11-09').lesson,1);assert.equal(E.day(s,'2026-11-09').tasks.filter(Boolean).length,0);assert.equal(E.balance(s),6)});
+test('missed days do not punish',()=>{const s=ready(E.fresh());E.complete(s,day,0);E.hatch(s,'rabbit','小月');E.day(s,'2026-12-01');assert.equal(s.pet.name,'小月');assert.equal(E.balance(s),1)});
+test('draft persistence',()=>{const s=E.fresh();E.setDraft(s,day,'essay','还没有写完的作文');const r=E.migrate(JSON.parse(JSON.stringify(s)));assert.equal(E.day(r,day).draft.essay,'还没有写完的作文')});
+test('original remains immutable',()=>{const s=ready(E.fresh()),old=E.day(s,day).draft.essay;E.saveEssay(s,day);E.setDraft(s,day,'essay','我重新写下一个真正观察到的动作。');E.saveEssay(s,day);assert.equal(s.essays[0].original,old);assert.equal(s.essays[0].revisions.length,1)});
+test('duplicate save no duplicate essay or XP',()=>{const s=ready(E.fresh());for(let i=0;i<50;i++)E.saveEssay(s,day);assert.equal(s.essays.length,1);assert.equal(s.essays[0].revisions.length,0);assert.equal(E.balance(s),0)});
+test('word use deduplicated',()=>{const s=ready(E.fresh());E.complete(s,day,0);E.complete(s,day,0);assert.equal(s.words.length,1)});
+test('pet needs actual exercise',()=>assert.throws(()=>E.hatch(E.fresh(),'dog','小狗')));
+test('pet changes not a reward source',()=>{const s=ready(E.fresh());E.complete(s,day,0);for(let i=0;i<20;i++)E.hatch(s,'dragon','星星');assert.equal(E.balance(s),1);assert.equal(E.stage(s),1)});
+test('fixed-price and duplicate gift protection',()=>{const s=ready(E.fresh());[0,1,2,3].forEach(i=>E.complete(s,day,i));E.hatch(s,'dog','星星');assert(E.purchase(s,'scarf'));assert.equal(E.purchase(s,'scarf'),false);assert.equal(E.balance(s),3)});
+test('cannot overspend',()=>{const s=ready(E.fresh());E.complete(s,day,0);E.hatch(s,'dog','星星');assert.throws(()=>E.purchase(s,'balloon'));assert.equal(E.balance(s),1)});
+test('snack once a day',()=>{const s=ready(E.fresh());[0,1,2,3].forEach(i=>E.complete(s,day,i));E.hatch(s,'dog','星星');E.purchase(s,'snack',day);E.purchase(s,'snack',day);assert.equal(E.balance(s),5)});
+test('timer upper bound',()=>{const s=E.fresh();for(let i=0;i<40;i++)E.tick(s,day,30);E.tick(s,day,-20);assert.equal(E.day(s,day).seconds,900)});
+test('save allowed at time cap',()=>{const s=ready(E.fresh());E.day(s,day).seconds=900;assert.throws(()=>E.complete(s,day,0));E.saveEssay(s,day);assert.equal(s.essays.length,1)});
+test('backup exact roundtrip',()=>{const s=ready(E.fresh());E.complete(s,day,0);assert.deepEqual(E.restore(E.backup(s)),s)});
+test('malformed backup rejected',()=>{assert.throws(()=>E.restore('{broken'));assert.throws(()=>E.restore('x'.repeat(2000001)));assert.throws(()=>E.migrate({schema:2}))});
+test('legacy records migrated',()=>{const s=E.migrate({stars:6,pet:'🐶',petName:'云朵',essays:[{title:'小狗',text:'白色的小狗。'}],words:[]});assert.equal(E.balance(s),6);assert.equal(s.essays[0].original,'白色的小狗。');assert.equal(E.stage(s),1)});
+test('grade config retained',()=>{const s=E.fresh();s.profile.grade=6;assert.equal(E.restore(E.backup(s)).profile.grade,6)});
+test('30 full topics',()=>{global.window={};require('../word-pet-mobile/android-native/app/src/main/assets/lessons.js');const l=window.WORDPET_LESSONS;assert.equal(l.length,30);assert.equal(new Set(l.map(x=>x.title)).size,30);l.forEach(x=>assert(x.words.length===3&&x.base&&x.observe&&x.topic&&x.goal))});
+test('length limit and no prototype field',()=>{const s=E.fresh();E.setDraft(s,day,'essay','a'.repeat(5000));assert.equal(E.day(s,day).draft.essay.length,3000);assert.throws(()=>E.setDraft(s,day,'__proto__','x'))});
+test('daily reward ledger isolation',()=>{const s=ready(E.fresh());[0,1,2,3].forEach(i=>E.complete(s,day,i));ready(s,'2026-11-09');[0,1,2,3].forEach(i=>E.complete(s,'2026-11-09',i));assert.equal(E.balance(s),12)});

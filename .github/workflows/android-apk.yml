@@ -1,63 +1,141 @@
-name: Build Word Pet Android APK
-
+name: Build and verify Word Pet Family APK
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
-      - "word-pet-mobile/android-native/**"
-      - "word-pet-mobile/server/**"
-      - "word-pet-mobile/cloudflare-worker/**"
-      - ".github/workflows/android-apk.yml"
-
+      - 'word-pet-mobile/android-native/**'
+      - 'word-pet-mobile/cloudflare-worker/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'docs/**'
+      - '.github/workflows/android-apk.yml'
 permissions:
   contents: read
-
+concurrency:
+  group: wordpet-android-main
+  cancel-in-progress: true
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-
-      - name: Use preinstalled Android SDK
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Unit tests and JavaScript syntax
         run: |
-          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
-          echo "/usr/local/lib/android/sdk/platform-tools" >> "$GITHUB_PATH"
-          echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses
-          /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Generate Gradle wrapper
-        working-directory: word-pet-mobile/android-native
-        run: gradle wrapper --gradle-version 8.7
-
-      - name: Build debug APK
-        working-directory: word-pet-mobile/android-native
-        run: ./gradlew assembleDebug --no-daemon
-
-      - name: Verify APK and checksum
+          mkdir -p evidence dist
+          node --check word-pet-mobile/android-native/app/src/main/assets/app.js
+          node --check word-pet-mobile/cloudflare-worker/src/index.js
+          node --test tests/engine.test.cjs tests/worker.test.mjs | tee evidence/unit-tests.tap
+      - name: Check optional cloud authorization without exposing values
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORDPET_PAIR_CODE: ${{ secrets.WORDPET_PAIR_CODE }}
+          WORDPET_FREE_PLAN_CONFIRMED: ${{ vars.WORDPET_FREE_PLAN_CONFIRMED }}
+          WORDPET_ENABLE_AI: ${{ vars.WORDPET_ENABLE_AI }}
+        run: python scripts/deploy_cloud.py
+      - name: Install browser test runtime
         run: |
-          APK="word-pet-mobile/android-native/app/build/outputs/apk/debug/app-debug.apk"
-          test -s "$APK"
-          file "$APK"
-          sha256sum "$APK" | tee apk-sha256.txt
-
-      - name: Upload installable APK
+          python -m pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - name: Phone and tablet browser tests
+        run: python tests/browser_test.py
+      - name: Android build tools
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$SDKMANAGER" --licenses > /dev/null
+          set -o pipefail
+          "$SDKMANAGER" 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Build application and instrumentation APKs
+        working-directory: word-pet-mobile/android-native
+        run: |
+          gradle --version
+          gradle assembleDebug assembleDebugAndroidTest --no-daemon --stacktrace
+      - name: Verify APK signature, package and contents
+        run: |
+          cp word-pet-mobile/android-native/app/build/outputs/apk/debug/app-debug.apk dist/WordPet-Family-1.4.0.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs dist/WordPet-Family-1.4.0.apk | tee evidence/apk-signature.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging dist/WordPet-Family-1.4.0.apk > evidence/apk-metadata.txt
+          python - <<'PY'
+          import zipfile,pathlib
+          with zipfile.ZipFile('dist/WordPet-Family-1.4.0.apk') as z:
+              for name in ['index.html','engine.js','app.js','app.css','lessons.js']:
+                  expected=pathlib.Path('word-pet-mobile/android-native/app/src/main/assets',name).read_bytes()
+                  assert z.read('assets/'+name)==expected, name
+              assert 'classes.dex' in z.namelist()
+          print('APK contains exact committed learning assets and Android bytecode')
+          PY
+          (cd dist && sha256sum WordPet-Family-1.4.0.apk > WordPet-Family-1.4.0.apk.sha256)
+      - name: Enable KVM for Android emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Android install, startup, storage and workflow tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_2
+          disable-animations: true
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            cd word-pet-mobile/android-native
+            gradle connectedDebugAndroidTest --no-daemon --stacktrace
+            adb shell pm clear com.wordpet.family
+            adb shell am start -n com.wordpet.family/com.wordpet.app.MainActivity
+            sleep 5
+            adb exec-out screencap -p > ../../evidence/android-emulator-home.png
+            adb shell pidof com.wordpet.family > ../../evidence/android-process.txt
+      - name: Assemble honest verification report
+        run: |
+          python scripts/build_report.py
+          cp evidence/cloud-status.json dist/cloud-status.json
+          cp docs/README_CN.md dist/README_CN.md
+          cp evidence/verification.json dist/verification.json
+          cp evidence/VERIFICATION.md dist/VERIFICATION.md
+          cp evidence/android-emulator-home.png dist/android-emulator-home.png
+          cp evidence/home-phone.png dist/home-phone.png
+          cp evidence/home-tablet.png dist/home-tablet.png
+      - name: Upload downloadable APK and reports
         uses: actions/upload-artifact@v4
         with:
-          name: word-pet-android-debug-apk
-          path: |
-            word-pet-mobile/android-native/app/build/outputs/apk/debug/app-debug.apk
-            apk-sha256.txt
+          name: wordpet-family-1.4.0
+          path: dist/
+          retention-days: 14
           if-no-files-found: error
-          retention-days: 30
+      - name: Publish actual APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="wordpet-1.4.0-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Word Pet 1.4.0 family test build ${GITHUB_RUN_NUMBER}" --notes-file evidence/VERIFICATION.md --latest
+      - name: Preserve diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wordpet-build-diagnostics
+          path: |
+            evidence/
+            word-pet-mobile/android-native/app/build/reports/
+            word-pet-mobile/android-native/app/build/outputs/androidTest-results/
+          retention-days: 7
+          if-no-files-found: warn

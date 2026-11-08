@@ -1,8 +1,12 @@
 name = "word-pet-family"
 main = "src/index.js"
-compatibility_date = "2026-11-01"
-
+compatibility_date = "2025-11-01"
+workers_dev = true
+[vars]
+AI_ENABLED = "false"
 [[d1_databases]]
 binding = "DB"
 database_name = "word-pet-family"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
+[ai]
+binding = "AI"

@@ -1,12 +1,3 @@
-CREATE TABLE IF NOT EXISTS child_state (
-  child_id TEXT PRIMARY KEY,
-  state_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS essays (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  child_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  essay_text TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
+-- Additive migration. Preserve legacy child_state and essays.
+CREATE TABLE IF NOT EXISTS wordpet_snapshots_v2(singleton TEXT PRIMARY KEY CHECK(singleton='main'),state_json TEXT NOT NULL,version INTEGER NOT NULL CHECK(version>0),updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS wordpet_limits_v2(bucket TEXT PRIMARY KEY,hits INTEGER NOT NULL);

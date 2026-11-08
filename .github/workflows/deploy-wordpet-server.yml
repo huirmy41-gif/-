@@ -1,37 +1,27 @@
 name: Deploy Word Pet Family Server
-
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-      - name: Install Wrangler
-        run: npm install --global wrangler
-      - name: Configure D1 database ID
-        working-directory: word-pet-mobile/cloudflare-worker
-        env:
-          D1_DATABASE_ID: ${{ vars.WORDPET_D1_DATABASE_ID }}
-        run: |
-          test -n "$D1_DATABASE_ID"
-          sed -i "s/REPLACE_WITH_D1_DATABASE_ID/$D1_DATABASE_ID/" wrangler.toml
-      - name: Apply database schema
-        working-directory: word-pet-mobile/cloudflare-worker
+          node-version: '22'
+      - name: Authorized free-plan deployment only
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: wrangler d1 execute word-pet-family --remote --file=schema.sql
-      - name: Deploy Worker
-        working-directory: word-pet-mobile/cloudflare-worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: wrangler deploy
+          WORDPET_PAIR_CODE: ${{ secrets.WORDPET_PAIR_CODE }}
+          WORDPET_FREE_PLAN_CONFIRMED: ${{ vars.WORDPET_FREE_PLAN_CONFIRMED }}
+          WORDPET_ENABLE_AI: ${{ vars.WORDPET_ENABLE_AI }}
+        run: python scripts/deploy_cloud.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cloud-deployment-status
+          path: evidence/cloud-status.json
+          retention-days: 7

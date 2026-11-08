@@ -1,0 +1,11 @@
+.gradle/
+**/build/
+local.properties
+*.jks
+*.keystore
+.env
+node_modules/
+__pycache__/
+evidence/
+dist/
+wrangler.runtime.toml
