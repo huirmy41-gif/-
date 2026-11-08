@@ -1,0 +1,127 @@
+name: Verify Word Pet Soundbook native base
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/wordpet-soundbook-base.yml','native17/**']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare soundbook native source
+        run: |
+          mkdir -p dist/tools/lib64 evidence
+          python scripts/prepare_journey.py
+          python - <<'PY'
+          from pathlib import Path
+          import re,shutil,wave,math,struct
+          root=Path('word-pet-mobile/android-native')
+          p=root/'app/build.gradle';t=p.read_text()
+          t=re.sub(r"applicationId '[^']+'","applicationId 'com.wordpet.soundbook'",t)
+          t=re.sub(r'versionCode \d+','versionCode 170',t)
+          t=re.sub(r"versionName '[^']+'","versionName '1.7.0'",t)
+          t=t.replace('compileSdk 35',"compileSdk 35\n androidResources { noCompress += ['wav'] }")
+          p.write_text(t)
+          p=root/'app/src/main/AndroidManifest.xml';t=p.read_text()
+          t=re.sub(r'android:label="[^"]+"','android:label="\u4f5c\u6587\u5c0f\u4f5c\u5bb6\u00b7\u6709\u58f0\u7ed8\u672c"',t);p.write_text(t)
+          java=root/'app/src/main/java/com/wordpet/app'
+          shutil.copyfile('native17/StoryAudio.java',java/'StoryAudio.java')
+          p=java/'MainActivity.java';t=p.read_text()
+          t=t.replace('private WebView web;','private WebView web;\n private StoryAudio storyAudio;')
+          t=t.replace('web.addJavascriptInterface(new Bridge(),"WordPetNative");','web.addJavascriptInterface(new Bridge(),"WordPetNative");storyAudio=new StoryAudio(this,web);web.addJavascriptInterface(storyAudio,"WordPetAudioNative");')
+          t=t.replace('super.onPause();if(tts!=null)tts.stop();','super.onPause();if(storyAudio!=null)storyAudio.pause();if(tts!=null)tts.stop();')
+          t=t.replace('if(tts!=null)tts.shutdown();','if(storyAudio!=null)storyAudio.close();if(tts!=null)tts.shutdown();')
+          p.write_text(t)
+          assets=root/'app/src/main/assets/soundbook/audio';assets.mkdir(parents=True,exist_ok=True)
+          with wave.open(str(assets/'native-probe.wav'),'wb') as w:
+              w.setparams((1,2,22050,0,'NONE','not compressed'))
+              w.writeframes(b''.join(struct.pack('<h',int(1200*math.sin(2*math.pi*440*i/22050))) for i in range(8820)))
+          p=root/'app/src/androidTest/java/com/wordpet/app/AppSmokeTest.java';t=p.read_text()
+          extra='''
+           @Test public void localAudioBridgeExists()throws Exception{ready();assertEquals("true",js("JSON.parse(WordPetAudioNative.status()).nativePlayback"));}
+           @Test public void localWavActuallyStartsAndCompletes()throws Exception{ready();js("window.audioProbe=[];window.wordPetSoundEvent=(t,id)=>audioProbe.push(t);WordPetAudioNative.play('native-probe',0.1);true");for(int i=0;i<100;i++){if("true".equals(js("audioProbe.includes('ended')"))){assertEquals("true",js("audioProbe.includes('playing')"));return;}Thread.sleep(100);}fail("WAV did not actually play through native MediaPlayer");}
+           @Test public void soundPathTraversalDenied()throws Exception{ready();js("window.audioProbe=[];window.wordPetSoundEvent=(t,id)=>audioProbe.push(t);WordPetAudioNative.play('../bad',0.1);true");Thread.sleep(300);assertEquals("0",js("audioProbe.length"));}
+           @Test public void offlineVoiceStatusIsExplicit()throws Exception{ready();assertEquals("true",js("typeof JSON.parse(WordPetAudioNative.status()).offlineChinese==='boolean'"));js("WordPetAudioNative.stop();true");}
+          '''
+          p.write_text(t.rstrip()[:-1]+extra+'}\n')
+          PY
+          node --test tests/engine.test.cjs tests/worker.test.mjs tests/journey.test.cjs > evidence/base-unit-tests.tap
+      - name: Official Android tools
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-35" "build-tools;35.0.0"'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Compile application and native tests
+        working-directory: word-pet-mobile/android-native
+        run: gradle assembleDebug assembleDebugAndroidTest --no-daemon --stacktrace
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Android native sound, startup and persistence tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: cd word-pet-mobile/android-native && gradle connectedDebugAndroidTest --no-daemon --stacktrace
+      - name: Export native base and verification records
+        run: |
+          cp word-pet-mobile/android-native/app/build/outputs/apk/debug/app-debug.apk dist/native-base.apk
+          cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" dist/tools/apksigner.jar
+          cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" dist/tools/zipalign
+          cp "$ANDROID_HOME/build-tools/35.0.0/aapt" dist/tools/aapt
+          cp "$ANDROID_HOME/build-tools/35.0.0/lib64/libc++.so" dist/tools/lib64/libc++.so
+          cp evidence/base-unit-tests.tap dist/base-unit-tests.tap
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile,json,hashlib,xml.etree.ElementTree as ET,shutil
+          root=Path('word-pet-mobile/android-native')
+          xmls=list((root/'app/build/outputs/androidTest-results').rglob('*.xml'))
+          counts={'tests':0,'failures':0,'errors':0}
+          for p in xmls:
+              n=ET.parse(p).getroot()
+              if n.tag=='testsuite':
+                  for k in counts:counts[k]+=int(n.get(k,'0'))
+          assert counts['tests']>=14 and counts['failures']==counts['errors']==0,counts
+          Path('dist/native-tests.json').write_text(json.dumps(counts,indent=2))
+          with zipfile.ZipFile('dist/prepared-source.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for base in ['word-pet-mobile','redesign','native17','tests','scripts','docs','.github']:
+                  for p in Path(base).rglob('*'):
+                      if p.is_file() and not any(x in p.parts for x in ['build','.gradle','.git','__pycache__']) and p.suffix not in ['.jks','.keystore']:
+                          z.write(p,str(p))
+          records={str(p.relative_to('dist')):hashlib.sha256(p.read_bytes()).hexdigest() for p in Path('dist').rglob('*') if p.is_file()}
+          Path('dist/base-hashes.json').write_text(json.dumps(records,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wordpet-soundbook-native-tested-base
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: soundbook-native-diagnostics
+          path: |
+            evidence/
+            word-pet-mobile/android-native/app/build/reports/
+            word-pet-mobile/android-native/app/build/outputs/androidTest-results/
+          retention-days: 7
