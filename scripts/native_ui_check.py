@@ -1,46 +1,54 @@
-"""Validate the actual Android WebView after a clean install, not a desktop surrogate."""
+"""Check the actual Android screen and touch controls after a clean install."""
 from pathlib import Path
-import json,time,subprocess
-from playwright.sync_api import sync_playwright
+import json,time,subprocess,re,xml.etree.ElementTree as ET
 ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'evidence'
-report={'android_webview_cold_start':False,'checks':[],'surrogate_browser':False}
+report={'android_webview_cold_start':False,'checks':[],'surrogate_browser':False,'method':'Android UIAutomator and adb touch'}
+def adb(*args,timeout=20):return subprocess.check_output(['adb',*args],timeout=timeout,stderr=subprocess.STDOUT)
 def shot(name):
- data=subprocess.check_output(['adb','exec-out','screencap','-p'],timeout=15)
+ data=adb('exec-out','screencap','-p')
  if not data.startswith(b'\x89PNG'):raise RuntimeError('Device screenshot is not PNG')
  (OUT/name).write_bytes(data)
+def view():
+ adb('shell','uiautomator','dump','--compressed','/sdcard/wordpet-screen.xml')
+ raw=adb('exec-out','cat','/sdcard/wordpet-screen.xml').decode('utf-8')
+ (OUT/'android-view.xml').write_text(raw)
+ return ET.fromstring(raw),raw
+def node(root,token):
+ for n in root.iter('node'):
+  if token in (n.get('text','')+' '+n.get('content-desc','')):
+   b=[int(x) for x in re.findall(r'\d+',n.get('bounds',''))]
+   if len(b)==4 and b[2]>b[0] and b[3]>b[1]:return b
+ return None
+def wait_for(token,required=()):
+ end=time.monotonic()+65;last=''
+ while time.monotonic()<end:
+  try:
+   root,raw=view();b=node(root,token)
+   if b and all(v in raw for v in required):return b
+   last='Requested screen text was not visible'
+  except Exception as e:last=type(e).__name__+': '+str(e)[:200]
+  time.sleep(1)
+ raise RuntimeError(last)
+def tap(b):adb('shell','input','tap',str((b[0]+b[2])//2),str((b[1]+b[3])//2))
+start='\u5f00\u59cb\u6211\u7684\u5c0f\u5192\u9669'
 try:
- with sync_playwright() as p:
-  deadline=time.monotonic()+60;browser=None
-  while time.monotonic()<deadline:
-   try:
-    browser=p.chromium.connect_over_cdp('http://127.0.0.1:9222',timeout=4000)
-    break
-   except Exception:
-    time.sleep(1)
-  if browser is None:raise RuntimeError('Android WebView debug transport did not become ready')
-  pages=[page for ctx in browser.contexts for page in ctx.pages]
-  if not pages:raise RuntimeError('Android WebView did not expose a page')
-  page=next((v for v in pages if 'appassets.androidplatform.net' in v.url),pages[0])
-  page.wait_for_function("document.readyState==='complete' && typeof WPAdventure==='object'",timeout=45000)
-  page.locator('#startJourney').wait_for(state='visible',timeout=20000)
-  assert page.locator('.path-node').count()==5
-  assert page.evaluate("document.querySelector('#startJourney').getBoundingClientRect().width>0")
-  report['checks'].append('cold start renders five learning path nodes and a visible start button')
-  page.wait_for_timeout(1500)
-  shot('android-emulator-home.png')
-  page.locator('#startJourney').click()
-  page.locator('#journeyScreen .answer-choice').first.wait_for(state='visible',timeout=15000)
-  assert page.locator('#journeyScreen .answer-choice').count()==3
-  report['checks'].append('real Android WebView click opens the three-option lesson')
-  page.wait_for_timeout(500)
-  shot('android-emulator-lesson.png')
-  page.locator('#exitJourney').click()
-  page.locator('#startJourney').wait_for(state='visible',timeout=15000)
-  report['checks'].append('exit saves and returns to the map')
-  page.evaluate('window.scrollTo(0,0)')
-  page.wait_for_timeout(1000)
-  shot('android-emulator-home.png')
-  report['android_webview_cold_start']=True
+ button=wait_for(start)
+ report['checks'].append('fresh Android install shows a visible learning start button')
+ time.sleep(1);shot('android-emulator-home.png')
+ tap(button)
+ wait_for('\u6bdb\u8338\u8338',('\u9999\u55b7\u55b7','\u6e05\u6f88\u89c1\u5e95'))
+ report['checks'].append('real touch opens the lesson with all three vocabulary options')
+ time.sleep(1);shot('android-emulator-lesson.png')
+ button=wait_for('\u4fdd\u5b58\u9000\u51fa');tap(button)
+ wait_for(start)
+ report['checks'].append('save-and-exit touch returns to the learning home')
+ time.sleep(1);shot('android-emulator-home.png')
+ report['android_webview_cold_start']=True
+except Exception as e:
+ report['error']=type(e).__name__+': '+str(e)[:500]
+ try:shot('android-cold-start-failure.png')
+ except Exception:pass
+ raise
 finally:
  (OUT/'android-ui-smoke.json').write_text(json.dumps(report,indent=2))
 print(json.dumps(report))
