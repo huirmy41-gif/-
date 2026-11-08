@@ -1,0 +1,16 @@
+/* Durable lesson attempts and gentle pet care. No network or artificial ability scores. */
+(function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;else root.WPJourney=api})(typeof globalThis==='object'?globalThis:this,function(){
+'use strict';
+function ensure(s){if(!s.adventure||s.adventure.version!==1)s.adventure={version:1,sessions:{},reviews:{},care:{},outfit:'',decor:'',badges:{}};return s.adventure}
+function session(s,date,lesson){const a=ensure(s);if(!a.sessions[date])a.sessions[date]={lesson,step:0,attempts:{},selected:[],finished:false,reviewId:null};return a.sessions[date]}
+function addDays(date,n){const d=new Date(date+'T12:00:00');d.setDate(d.getDate()+n);return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-')}
+function due(s,date){return Object.entries(ensure(s).reviews).filter(([k,v])=>v.due<=date&&v.last!==date).sort((a,b)=>a[1].due.localeCompare(b[1].due)).map(([k])=>k)}
+function answer(s,date,lesson,key,correct,reviewId){const run=session(s,date,lesson);let item=run.attempts[key];if(item?.passed)return {already:true,correct:true,firstTry:item.mistakes===0};if(!item)item=run.attempts[key]={mistakes:0,passed:false};if(!correct){item.mistakes++;return {correct:false,firstTry:false}}item.passed=true;const first=item.mistakes===0;if(reviewId){const a=ensure(s),r=a.reviews[reviewId]||{successes:0};if(r.last!==date){r.successes=first?(r.successes||0)+1:0;r.last=date;r.due=addDays(date,first?[1,3,7,14][Math.min(3,Math.max(0,r.successes-1))]:1);r.needsHelp=!first;a.reviews[reviewId]=r}}return {correct:true,firstTry:first}}
+function advance(s,date,lesson){const r=session(s,date,lesson);r.step=Math.min(7,r.step+1);return r.step}
+function care(s,date,type){const a=ensure(s);if(!s.pet.hatched)throw Error('先完成一个小任务，再孵化伙伴。');if(!a.care[date])a.care[date]={seconds:0,fed:false,greeted:false};const c=a.care[date];if(c.seconds>=90)throw Error('今天的小屋互动结束啦。伙伴会好好休息，明天再见。');if(type==='feed'){if(c.fed)return false;const owned=Object.values(s.purchases||{}).some(p=>p.id==='snack'&&p.date===date);if(!owned)throw Error('先用一颗学习星星领一份爱心饼干。');c.fed=true}else if(type==='greet'){if(c.greeted)return false;c.greeted=true}else throw Error('未知的互动');return true}
+function tickCare(s,date,n){const a=ensure(s);if(!a.care[date])a.care[date]={seconds:0,fed:false,greeted:false};a.care[date].seconds=Math.min(90,a.care[date].seconds+Math.max(0,Math.min(5,Number(n)||0)))}
+function equip(s,id){const a=ensure(s);if(!s.purchases[id])throw Error('先用学习星星兑换这件礼物。');if(id==='scarf')a.outfit=a.outfit===id?'':id;else if(id==='bed'||id==='balloon')a.decor=a.decor===id?'':id;else throw Error('这件礼物不能穿戴');return true}
+function badges(s){const a=ensure(s);if(s.words.length)a.badges.word=true;if(s.essays.length)a.badges.writer=true;if(s.essays.some(e=>e.revisions?.length))a.badges.editor=true;if(Object.values(s.days).filter(d=>d.tasks?.every(Boolean)).length>=3)a.badges.regular=true;return a.badges}
+function finish(s,date,lesson){const r=session(s,date,lesson);if(!s.days[date]?.tasks.every(Boolean))throw Error('请先完成今天的表达练习。');r.finished=true;r.step=7;badges(s);return r}
+return {ensure,session,answer,advance,due,addDays,care,tickCare,equip,badges,finish};
+});

@@ -1,4 +1,4 @@
-name: Build and verify Word Pet Family APK
+name: Build and verify Word Pet Adventure APK
 on:
   workflow_dispatch:
   push:
@@ -6,6 +6,7 @@ on:
     paths:
       - 'word-pet-mobile/android-native/**'
       - 'word-pet-mobile/cloudflare-worker/**'
+      - 'redesign/**'
       - 'tests/**'
       - 'scripts/**'
       - 'docs/**'
@@ -32,21 +33,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Prepare original adventure experience
+        run: |
+          mkdir -p evidence dist
+          python scripts/prepare_journey.py
       - name: Unit tests and JavaScript syntax
         run: |
           set -o pipefail
-          mkdir -p evidence dist
-          node --check word-pet-mobile/android-native/app/src/main/assets/app.js
+          for file in word-pet-mobile/android-native/app/src/main/assets/*.js; do node --check "$file"; done
           node --check word-pet-mobile/cloudflare-worker/src/index.js
-          node --test tests/engine.test.cjs tests/worker.test.mjs | tee evidence/unit-tests.tap
-      - name: Check optional cloud authorization without exposing values
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORDPET_PAIR_CODE: ${{ secrets.WORDPET_PAIR_CODE }}
-          WORDPET_FREE_PLAN_CONFIRMED: ${{ vars.WORDPET_FREE_PLAN_CONFIRMED }}
-          WORDPET_ENABLE_AI: ${{ vars.WORDPET_ENABLE_AI }}
-        run: python scripts/deploy_cloud.py
+          node --test tests/engine.test.cjs tests/worker.test.mjs tests/journey.test.cjs | tee evidence/unit-tests.tap
+      - name: Record optional cloud status without enabling services
+        run: |
+          python - <<'PY'
+          import pathlib,json
+          pathlib.Path('evidence/cloud-status.json').write_text(json.dumps({'deployed':False,'reason':'Cloud service not provisioned by this design release; offline use needs no account.','paid_plan_enabled_by_this_script':False}))
+          PY
       - name: Install browser test runtime
         run: |
           python -m pip install playwright==1.56.0
@@ -65,25 +67,23 @@ jobs:
           gradle-version: '8.7'
       - name: Build application and instrumentation APKs
         working-directory: word-pet-mobile/android-native
-        run: |
-          gradle --version
-          gradle assembleDebug assembleDebugAndroidTest --no-daemon --stacktrace
+        run: gradle assembleDebug assembleDebugAndroidTest --no-daemon --stacktrace
       - name: Verify APK signature, package and contents
         run: |
           set -o pipefail
-          cp word-pet-mobile/android-native/app/build/outputs/apk/debug/app-debug.apk dist/WordPet-Family-1.4.0.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs dist/WordPet-Family-1.4.0.apk | tee evidence/apk-signature.txt
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging dist/WordPet-Family-1.4.0.apk > evidence/apk-metadata.txt
+          cp word-pet-mobile/android-native/app/build/outputs/apk/debug/app-debug.apk dist/WordPet-Adventure-1.5.0.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs dist/WordPet-Adventure-1.5.0.apk | tee evidence/apk-signature.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging dist/WordPet-Adventure-1.5.0.apk > evidence/apk-metadata.txt
           python - <<'PY'
           import zipfile,pathlib
-          with zipfile.ZipFile('dist/WordPet-Family-1.4.0.apk') as z:
-              for name in ['index.html','engine.js','app.js','app.css','lessons.js']:
-                  expected=pathlib.Path('word-pet-mobile/android-native/app/src/main/assets',name).read_bytes()
-                  assert z.read('assets/'+name)==expected, name
+          source=pathlib.Path('word-pet-mobile/android-native/app/src/main/assets')
+          with zipfile.ZipFile('dist/WordPet-Adventure-1.5.0.apk') as z:
+              for p in source.iterdir():
+                  if p.is_file(): assert z.read('assets/'+p.name)==p.read_bytes(),p.name
               assert 'classes.dex' in z.namelist()
-          print('APK contains exact committed learning assets and Android bytecode')
+          print('APK contains exact prepared learning and adventure assets')
           PY
-          (cd dist && sha256sum WordPet-Family-1.4.0.apk > WordPet-Family-1.4.0.apk.sha256)
+          (cd dist && sha256sum WordPet-Adventure-1.5.0.apk > WordPet-Adventure-1.5.0.apk.sha256)
       - name: Enable KVM for Android emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -100,20 +100,23 @@ jobs:
           emulator-boot-timeout: 600
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
           script: bash scripts/run_emulator.sh
-      - name: Assemble honest verification report
+      - name: Assemble verification report and original design notes
         run: |
           python scripts/build_report.py
-          cp evidence/cloud-status.json dist/cloud-status.json
-          cp docs/README_CN.md dist/README_CN.md
-          cp evidence/verification.json dist/verification.json
-          cp evidence/VERIFICATION.md dist/VERIFICATION.md
-          cp evidence/android-emulator-home.png dist/android-emulator-home.png
-          cp evidence/home-phone.png dist/home-phone.png
-          cp evidence/home-tablet.png dist/home-tablet.png
+          cp evidence/cloud-status.json docs/README_CN.md docs/REDESIGN_1_5.md evidence/verification.json evidence/VERIFICATION.md dist/
+          cp evidence/*-phone.png evidence/home-tablet.png evidence/android-emulator-home.png dist/
+          python - <<'PY'
+          import zipfile,pathlib
+          root=pathlib.Path('.')
+          with zipfile.ZipFile('dist/WordPet-1.5-Source.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for folder in ['redesign','scripts','tests','docs','word-pet-mobile/android-native/app/src/main/assets']:
+                  for p in (root/folder).rglob('*'):
+                      if p.is_file() and '__pycache__' not in str(p): z.write(p,str(p))
+          PY
       - name: Upload downloadable APK and reports
         uses: actions/upload-artifact@v4
         with:
-          name: wordpet-family-1.4.0
+          name: wordpet-adventure-1.5.0
           path: dist/
           retention-days: 14
           if-no-files-found: error
@@ -121,15 +124,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="wordpet-1.4.0-${GITHUB_RUN_NUMBER}"
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Word Pet 1.4.0 family test build ${GITHUB_RUN_NUMBER}" --notes-file evidence/VERIFICATION.md --latest
+          TAG="wordpet-1.5.0-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Word Pet 1.5.0 Adventure family test build ${GITHUB_RUN_NUMBER}" --notes-file evidence/VERIFICATION.md --latest
       - name: Preserve diagnostics even on failure
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wordpet-build-diagnostics
+          name: wordpet-adventure-diagnostics
           path: |
             evidence/
+            redesign/
+            scripts/prepare_journey.py
+            tests/browser_test.py
+            word-pet-mobile/android-native/app/src/main/assets/
             word-pet-mobile/android-native/app/build/reports/
             word-pet-mobile/android-native/app/build/outputs/androidTest-results/
           retention-days: 7
