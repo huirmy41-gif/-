@@ -4,8 +4,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/word-pet-mobile/android-native"
 trap 'adb logcat -d > "$ROOT/evidence/android-logcat.txt" || true' EXIT
 gradle connectedDebugAndroidTest --no-daemon --stacktrace
+# Instrumentation teardown may uninstall the app. Install the verified artifact again for first-run capture.
+adb install -r -t "$ROOT/dist/WordPet-Family-1.4.0.apk"
 adb shell pm clear com.wordpet.family
-adb shell am start -n com.wordpet.family/com.wordpet.app.MainActivity
+adb shell am start -W -n com.wordpet.family/com.wordpet.app.MainActivity
 sleep 5
 adb exec-out screencap -p > "$ROOT/evidence/android-emulator-home.png"
 adb shell pidof com.wordpet.family > "$ROOT/evidence/android-process.txt"
